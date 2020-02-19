@@ -19,8 +19,8 @@ defmodule Mdns.Client do
 
   defmodule Device do
     defstruct ip: nil,
-              port: nil,
               services: [],
+              service_ports: %{},
               domain: nil,
               payload: %{}
   end
@@ -70,14 +70,14 @@ defmodule Mdns.Client do
   def handle_cast({:query, namespace}, state) do
     packet = %DNS.Record{
       @query_packet
-      | :qdlist => [
+      | qdlist: [
           %DNS.Query{domain: to_charlist(namespace), type: :ptr, class: :in}
         ]
     }
 
     p = DNS.Record.encode(packet)
     :gen_udp.send(state.udp, @mdns_group, @port, p)
-    {:noreply, %State{state | :queries => Enum.uniq([namespace | state.queries])}}
+    {:noreply, %State{state | queries: Enum.uniq([namespace | state.queries])}}
   end
 
   def handle_info({:udp, _socket, ip, _port, packet}, state) do
@@ -98,38 +98,35 @@ defmodule Mdns.Client do
     device = get_device(ip, record, state)
 
     devices =
-      Enum.reduce(state.queries, %{:other => []}, fn query, acc ->
-        cond do
-          Enum.any?(device.services, fn service -> String.ends_with?(service, query) end) ->
-            {namespace, devices} = create_namespace_devices(query, device, acc, state)
-            Mdns.EventManager.notify({namespace, device})
-            Logger.debug("mDNS device: #{inspect({namespace, device})}")
-            devices
-
-          true ->
-            Map.merge(acc, state.devices)
+      Enum.reduce(state.queries, %{other: []}, fn query, acc ->
+        if Enum.any?(device.services, fn service -> String.ends_with?(service, query) end) do
+          {namespace, devices} = create_namespace_devices(query, device, acc, state)
+          Mdns.EventManager.notify({namespace, device})
+          Logger.debug("mDNS device: #{inspect({namespace, device})}")
+          devices
+        else
+          Map.merge(acc, state.devices)
         end
       end)
 
-    %State{state | :devices => devices}
+    %State{state | devices: devices}
   end
 
-  def handle_device(%DNS.Resource{:type => :ptr} = record, device) do
+  def handle_device(%DNS.Resource{type: :ptr} = record, device) do
     %Device{
       device
-      | :services =>
-          Enum.uniq([to_string(record.data), to_string(record.domain)] ++ device.services)
+      | services: Enum.uniq([to_string(record.data), to_string(record.domain) | device.services])
     }
   end
 
-  def handle_device(%DNS.Resource{:type => :a} = record, device) do
-    %Device{device | :domain => to_string(record.domain)}
+  def handle_device(%DNS.Resource{type: :a} = record, device) do
+    %Device{device | domain: to_string(record.domain)}
   end
 
   def handle_device({:dns_rr, _d, :txt, _id, _, _, data, _, _, _}, device) do
     %Device{
       device
-      | :payload =>
+      | payload:
           Enum.reduce(data, %{}, fn kv, acc ->
             case String.split(to_string(kv), "=", parts: 2) do
               [k, v] -> Map.put(acc, String.downcase(k), String.trim(v))
@@ -143,8 +140,11 @@ defmodule Mdns.Client do
     device
   end
 
-  def handle_device({:dns_rr, _, :srv, _, _, _, {_p, _w, port, _t}, _, _, _}, device) do
-    %Device{device | port: port}
+  def handle_device({:dns_rr, service, :srv, _, _, _, {_p, _w, port, _t}, _, _, _}, device) do
+    %Device{
+      device
+      | service_ports: Map.put(device.service_ports, to_string(service), port)
+    }
   end
 
   def handle_device({:dns_rr, _, _, _, _, _, _, _, _, _}, device) do
@@ -158,7 +158,7 @@ defmodule Mdns.Client do
   def get_device(ip, record, state) do
     orig_device =
       Enum.concat(Map.values(state.devices))
-      |> Enum.find(%Device{:ip => ip}, fn device ->
+      |> Enum.find(%Device{ip: ip}, fn device ->
         device.ip == ip
       end)
 
@@ -171,21 +171,18 @@ defmodule Mdns.Client do
     namespace = String.to_atom(query)
 
     {namespace,
-     cond do
-       Enum.any?(Map.get(state.devices, namespace, []), fn dev -> dev.ip == device.ip end) ->
-         Map.merge(devices, %{namespace => merge_device(device, namespace, state)})
-
-       true ->
-         Map.merge(devices, %{namespace => [device | Map.get(state.devices, namespace, [])]})
+     if Enum.any?(Map.get(state.devices, namespace, []), fn dev -> dev.ip == device.ip end) do
+       Map.merge(devices, %{namespace => merge_device(device, namespace, state)})
+     else
+       Map.merge(devices, %{namespace => [device | Map.get(state.devices, namespace, [])]})
      end}
   end
 
   def merge_device(device, namespace, state) do
     Enum.map(Map.get(state.devices, namespace, []), fn d ->
-      cond do
-        device.ip == d.ip -> Map.merge(d, device)
-        true -> d
-      end
+      if device.ip == d.ip,
+        do: Map.merge(d, device),
+        else: d
     end)
   end
 end
