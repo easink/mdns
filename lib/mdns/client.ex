@@ -87,10 +87,9 @@ defmodule Mdns.Client do
   def handle_packet(ip, packet, state) do
     record = DNS.Record.decode(packet)
 
-    case record.header.qr do
-      true -> handle_response(ip, record, state)
-      _ -> state
-    end
+    if record.header.qr,
+      do: handle_response(ip, record, state),
+      else: state
   end
 
   def handle_response(ip, record, state) do
@@ -127,10 +126,10 @@ defmodule Mdns.Client do
     %Device{
       device
       | payload:
-          Enum.reduce(data, %{}, fn kv, acc ->
+          Enum.reduce(data, device.payload, fn kv, acc ->
             case String.split(to_string(kv), "=", parts: 2) do
               [k, v] -> Map.put(acc, String.downcase(k), String.trim(v))
-              _ -> nil
+              _ -> device.payload
             end
           end)
     }
