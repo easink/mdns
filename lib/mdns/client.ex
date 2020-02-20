@@ -111,18 +111,18 @@ defmodule Mdns.Client do
     %State{state | devices: devices}
   end
 
-  def handle_device(%DNS.Resource{type: :ptr} = record, device) do
+  def handle_device(%DNS.Resource{type: :ptr, domain: domain, data: data}, device) do
     %Device{
       device
-      | services: Enum.uniq([to_string(record.data), to_string(record.domain) | device.services])
+      | services: Enum.uniq([to_string(data), to_string(domain) | device.services])
     }
   end
 
-  def handle_device(%DNS.Resource{type: :a} = record, device) do
-    %Device{device | domain: to_string(record.domain)}
+  def handle_device(%DNS.Resource{type: :a, domain: domain}, device) do
+    %Device{device | domain: to_string(domain)}
   end
 
-  def handle_device({:dns_rr, _d, :txt, _id, _, _, data, _, _, _}, device) do
+  def handle_device(%DNS.Resource{type: :txt, data: data}, device) do
     %Device{
       device
       | payload:
@@ -135,15 +135,15 @@ defmodule Mdns.Client do
     }
   end
 
-  def handle_device(%DNS.Resource{}, device) do
-    device
-  end
-
-  def handle_device({:dns_rr, service, :srv, _, _, _, {_p, _w, port, _t}, _, _, _}, device) do
+  def handle_device(%DNS.Resource{type: :srv, domain: domain, data: {_p, _w, port, _t}}, device) do
     %Device{
       device
-      | service_ports: Map.put(device.service_ports, to_string(service), port)
+      | service_ports: Map.put(device.service_ports, to_string(domain), port)
     }
+  end
+
+  def handle_device(%DNS.Resource{}, device) do
+    device
   end
 
   def handle_device({:dns_rr, _, _, _, _, _, _, _, _, _}, device) do
